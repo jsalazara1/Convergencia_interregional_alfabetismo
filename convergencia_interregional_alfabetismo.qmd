@@ -1,0 +1,419 @@
+---
+title: "Convergencia Interregional en Colombia: Tasa de Alfabetismo"
+author: "Jerónimo Salazar Aguirre"
+format: html
+editor: visual
+---
+
+En el presente trabajo se examinarán brevemente los patrones de convergencia interregional en Colombia, a partir de un indicador social clave como la tasa de analfabetismo. Esta variable se define como la proporción de la población mayor de 15 años que sabe leer y escribir, expresada en porcentaje, y se considera para 28 unidades departamentales en los años 1973 y 2018. Aquí es pertinente hacer una salvedad: de acuerdo a Kenny´s (2005), se prefiere la definición positiva de las variables (es decir, que entre mayor sea, es mejor en términos sociales), pues se obtienen medidas de convergencia menos sensibles. 
+
+Debido a la naturaleza del análisis se excluye el territorio isleño de San Andrés y Providencia. Además, los departamentos de Amazonas, Vaupés, Vichada, Guainía y Guaviare se agrupan bajo el nombre de "Amazonía Group".
+
+```{r, message=FALSE, warning=F}
+rm(list=ls()) 
+
+#### Cargar librerias 
+
+library(sf); library(tmap); library(tidyverse); library(readxl); library(tmaptools); library(viridis); library(summarytools); library(terra); library(ggview); library(ggmap); library(mapview); library(leaflet); library(dplyr); library(corrplot); library(knitr);
+library(kableExtra); library(ggplot2); library(ggnewscale); library(spdep); library(openxlsx); library(readr); library(patchwork); library(writexl); library(spatstat.geom); library(dbmss); library(ggrepel); library(sandwich); library(KernSmooth); library(lmtest); library(ks); library(stringr); library(stringi); library(scales)
+
+#### Cargar los datos
+
+data <- read_xlsx("C:/Users/jeros/OneDrive - Universidad EAFIT/PREGRADO/Octavo_semestre/Econometria Avanzada/Talleres/Taller_4/Tasa_alfab_dept.xlsx")
+
+colnames(data) <- c("dept", "ID", "y1973", "y1985", "y1993", "y2005", "y2018")
+
+```
+
+## Distribución Geográfica
+
+```{r}
+# Gráfico de barras: tasa de alfabetismo por departamento
+df_long <- data %>%
+  select(dept, y1973, y2018) %>%
+  pivot_longer(cols = c(y1973, y2018), names_to = "año", values_to = "tasa") %>%
+  mutate(año = recode(año, y1973 = "1973", y2018 = "2018"))
+
+orden <- data %>% arrange(y2018) %>% pull(dept)
+df_long$dept <- factor(df_long$dept, levels = orden)
+
+ggplot(df_long, aes(x = tasa, y = dept, fill = año)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.65, alpha = 0.9) +
+  scale_fill_manual(values = c("1973" = "#4575b4", "2018" = "#d73027")) +
+  labs(title = "Tasa de Alfabetismo Departamental en Colombia",
+       subtitle = "Comparación 1973 vs. 2018",
+       x = "Tasa de Alfabetismo (%)", y = NULL, fill = "Año") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold"))
+```
+
+```{r, warning=FALSE, message=FALSE}
+## Organizando el shape file
+
+normalize_name <- function(x) {
+  x |>
+    iconv(from = "UTF-8", to = "ASCII//TRANSLIT") |>
+    tolower() |>
+    str_squish()
+}
+
+colombia_sf <- st_read(file.choose())
+
+colombia_shp <- colombia_sf |>
+  mutate(
+    name = iconv(name, from = "UTF-8", to = "UTF-8"),
+    dept_clean = normalize_name(name),
+    dept_clean = case_when(
+      dept_clean == "distrito capital de bogota" ~ "bogota",
+      dept_clean == "valle del cauca" ~ "valle",
+      TRUE ~ dept_clean)
+  )
+
+literacy_df <- data |>
+  mutate(
+    dept_clean = normalize_name(dept)
+    )
+
+## Agrupando los departamentos de la Amazonía
+
+amazonia_members <- c("amazonas", "guainia", "guaviare", "vaupes", "vichada")
+
+amazonia_shape <- colombia_shp |>
+  filter(dept_clean %in% amazonia_members) |>
+  summarise(geometry = st_union(geometry), .groups = "drop") |>
+  mutate(
+    id = "AMAZONIA_GROUP",
+    name = "Amazonía Group",
+    source = NA_character_,
+    dept_clean = "amazonia group"
+  )
+
+colombia_map <- colombia_shp |>
+  filter(!dept_clean %in% amazonia_members) |>
+  select(id, name, source, dept_clean, geometry) |>
+  bind_rows(
+    amazonia_shape |>
+      select(id, name, source, dept_clean, geometry)
+  )
+
+## Efectuando el merge
+
+map_df <- colombia_map |>
+  left_join(literacy_df, by = c("dept_clean" = "dept_clean"))
+
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+common_limits <- range(
+  c(map_df$y1973, map_df$y2018),
+  na.rm = TRUE
+)
+
+fill_scale_common <- scale_fill_viridis_c(
+  option = "viridis",
+  limits = common_limits,
+  oob = squish,
+  na.value = "grey90",
+  name = "(%)",
+  labels = label_number(accuracy = 0.1)
+)
+
+map_theme <- theme_void(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 10, hjust = 0.5),
+    plot.subtitle = element_text(size = 8, hjust = 0.5),
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(8, 8, 8, 8)
+  )
+
+## Creación de ambos mapas
+
+map_1973 <- ggplot(map_df) +
+  geom_sf(aes(fill = y1973), color = "white", linewidth = 0.25) +
+  fill_scale_common +
+  labs(
+    title = "1973"
+  ) +
+  map_theme
+
+map_2018 <- ggplot(map_df) +
+  geom_sf(aes(fill = y2018), color = "white", linewidth = 0.25) +
+  fill_scale_common +
+  labs(
+    title = "2018"
+  ) +
+  map_theme
+
+combined_map <- map_1973 + map_2018 +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "Tasa de Alfabetismo en Colombia por Departamento"
+  ) &
+  theme(
+    plot.title = element_text(face = "bold", size = 13, hjust = 0.5)
+  )
+
+print(combined_map)
+
+```
+El primer mapa exhibe una marcada heterogeneidad espacial: los departamentos del interior andino y del Eje Cafetero concentran las tasas más altas (tonos verde claro), mientras que la periferia occidental y costera exhibe los rezagos más profundos. Chocó y Sucre aparecen en tonos morado oscuro, reflejando tasas por debajo del 62%, y los departamentos de la costa caribe como Córdoba, Bolívar y Magdalena se sitúan también en las posiciones inferiores. Lo que da cuenta de un patrón centro-periferia ampliamente observado a través de otras variables en el marco de la geografía económica histórica del país.
+
+
+Después de 45 años, sí se evidencia una transformación sustancial en términos de analfabetismo a lo largo y ancho del territorio. Para 2018, la gran mayoría de los departamentos ha superado el umbral del 90%. Al interior del país, se identifica un importante acercamiento al techo de la distribución por el lado de Bogotá, Cundinamarca y Valle; registrando tasas de alfabetismo de 98.7%, 96.7% y 96.5% respectivamente. Más relevante aún es la transformación de las regiones que en 1973 ocupaban las casillas inferiores: departamentos como Boyacá, Cauca y Nariño y la región oriental han convergido hacia los tonos verdes intermedios-altos, evidenciando el efecto redistributivo de la expansión educativa posibilitada por la introducción del Sistema General de Participaciones.
+
+Por último, se identifican dos focos de rezago persistentes. Chocó siguió ocupando la segunda posición más baja en 2018 (85.2%), siendo prueba de ello el aislamiento geográfico y la débil presencia institucional que ha experimentado históricamente el territorio. Por su parte, La Guajira presenta una situación análoga e, incluso, más preocupante, ya que a pesar de haber partido de una posición intermedia en 1973 (79.1%), en 2018 registra la tasa más baja del país (83.0%), lo que en términos relativos implica un deterioro importante, como se verá más adelante.
+
+
+## Medidas de Convergencia tradicionales
+
+Siguiendo la metodología de Royuela y García (2015), se emplean dos enfoques complementarios y mutuamente necesarios para el análisis de convergencia: la $\beta$-convergencia y la $\sigma$-convergencia.
+
+### $\beta$-Convergencia
+
+```{r, message=FALSE, warning=FALSE}
+
+T_total <- 2018 - 1973
+data <- data %>%
+  mutate(
+    logy0    = log(y1973),
+    logyT    = log(y2018),
+    tc_alfab = (logyT - logy0) / T_total   # tasa de crecimiento promedio anual
+  )
+
+# OLS sin efectos espaciales
+modelo_ols <- lm(tc_alfab ~ logy0, data = data)
+summary(modelo_ols)
+
+# Velocidad de convergencia
+b_hat   <- coef(modelo_ols)["logy0"]
+beta_cs <- log(1 - T_total * b_hat) / T_total
+HL_cs   <- log(2) / beta_cs
+
+cat(sprintf("  Coeficiente b      = %.6f\n", b_hat))
+cat(sprintf("  Velocidad β        = %.4f%% por año\n", beta_cs * 100))
+cat(sprintf("  Vida media (años)  = %.1f\n", HL_cs))
+
+```
+```{r}
+df_label <- data %>% filter(dept %in% c("Chocó","La Guajira","Bogotá","Sucre","Córdoba","Boyacá", "Quindío"))
+
+ggplot(data, aes(x = logy0, y = tc_alfab * 100)) +
+  geom_point(color = "#2c7bb6", size = 3, alpha = 0.75) +
+  geom_smooth(method = "lm", se = TRUE, color = "red", fill = "#f7a8a8", linewidth = 1.2) +
+  geom_text_repel(data = df_label, aes(label = dept), size = 3, color = "#333333") +
+  labs(
+    title    = "β-Convergencia Absoluta: Tasa de Alfabetismo",
+    subtitle = sprintf("Colombia 1973–2018  |  β = %.3f%%/año  |  R² = %.3f",
+                       beta_cs * 100, summary(modelo_ols)$r.squared),
+    x = "Log(Tasa de Alfabetismo) en 1973",
+    y = "Tasa de crecimiento anual promedio (%)"
+  ) +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(face = "bold"))
+```
+Para el período completo se obtiene un coeficiente $b = −0.01683$, con un p-valor asociado $< 0.001$, lo que indica convergencia absoluta altamente significativa. La velocidad de convergencia implícita es β = 1.253% por año y la vida media correspondiente es de 55.3 años; entendida también como el tiempo necesario para cerrar la mitad de la brecha entre los departamentos. 
+
+En la Figura previa se visualiza que los departamentos con menor tasa inicial (Chocó, Sucre, Córdoba) registran las mayores tasas de crecimiento, mientras que Bogotá, Risaralda y Quindío (que partían de niveles altos) crecen más lentamente. La Guajira es el único caso que se aleja, considerablemente, de la tendencia general, con una tasa de crecimiento menor a la esperada por su nivel inicial, lo cual es un reflejo de los problemas estructurales particulares de ese departamento.
+
+
+### $\sigma$-Convergencia
+
+```{r}
+# Coeficiente de variación (%)
+cv <- function(x) {
+  sd(x) / mean(x) * 100}
+
+years_vec <- c(1973, 1985, 1993, 2005, 2018)
+cols_vec  <- c("y1973","y1985","y1993","y2005","y2018")
+
+sigma_df <- data.frame(
+  año  = years_vec,
+  media = sapply(cols_vec, function(c) mean(data[[c]])),
+  sd   = sapply(cols_vec, function(c) sd(data[[c]])),
+  cv   = sapply(cols_vec, function(c) cv(data[[c]]))
+)
+
+cat("\n=== σ-Convergencia ===\n")
+print(sigma_df)
+
+# Gráfico σ-convergencia
+ggplot(sigma_df, aes(x = año, y = cv)) +
+  geom_line(color = "#2c7bb6", linewidth = 1.5) +
+  geom_point(color = "#2c7bb6", size = 4, shape = 21, fill = "white", stroke = 2) +
+  geom_text(aes(label = sprintf("%.2f%%", cv)), position = position_stack(vjust = 0.9), size = 3.5, color = "#2c7bb6") +
+  scale_x_continuous(breaks = years_vec) +
+  labs(title = "σ-Convergencia: Coeficiente de Variación",
+       subtitle = "Tasa de Alfabetismo Departamental, Colombia 1973–2018",
+       x = "Año Censo", y = "") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+Con esta medida de convergencia se examina si la dispersión de la tasa de alfabetismo entre los departamentos tiende a reducirse con el tiempo. Por lo que se utiliza el coeficiente de variación (desviación estándar/media) como medida de dispersión relativa, permitiendo comparaciones entre períodos con distintos niveles medios. Estos resultados muestran una tendencia clara y sostenida hacia la convergencia: el CV desciende desde 10.81% en 1973 hasta 3.81% en 2018, una reducción del 64.8% en el período completo. 
+
+Ahora bien, es importante señalar el quiebre que hubo entre 1993 y 2005, cuando el CV pasa marginalmente de 5.86% a 6.39%. Dicho comportamiento podría explicarse por un impacto diferencial de la crisis económica de finales de los noventa sobre la estructura económica de los departamentos. Y a partir de allí la dispersión retoma su trayectoria descendente, hasta alcanzar el mínimo señalado previamente. Un hallazgo que refuerza la evidencia de $\sigma$-convergencia, con una consolidación mayor a la reportada por Royuela y García (2015).
+
+## Medidas de Convergencia alternativas
+
+### Kernel Univariado
+
+```{r}
+# Variables relativas a la media nacional (escala logarítmica)
+media73 <- mean(data$y1973)
+media18 <- mean(data$y2018)
+
+rel73 <- log(data$y1973 / media73)
+rel18 <- log(data$y2018 / media18)
+
+# Sheather-Jones bandwidth
+
+grid_pts  <- seq(-0.40, 0.25, length.out = 512)
+bw73 <- bw.SJ(rel73)   # Sheather-Jones bandwidth
+bw18 <- bw.SJ(rel18)
+
+kde73 <- density(rel73, bw = bw73, n = 512, from = -0.40, to = 0.25)
+kde18 <- density(rel18, bw = bw18, n = 512, from = -0.40, to = 0.25)
+
+df_kde <- data.frame(
+  x    = c(kde73$x, kde18$x),
+  y    = c(kde73$y, kde18$y),
+  año  = rep(c("1973","2018"), each = length(kde73$x))
+)
+
+p_univ <- ggplot(df_kde, aes(x = x, y = y, color = año, linetype = año)) +
+  geom_line(linewidth = 1.5) +
+  geom_rug(data = data.frame(x = rel73), aes(x = x), alpha = 0.5,
+         color = "#4575b4", sides = "b", inherit.aes = FALSE) +
+  geom_rug(data = data.frame(x = rel18), aes(x = x), alpha = 0.5,
+         color = "#d73027", sides = "b", inherit.aes = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "gray50") +
+  scale_color_manual(values = c("1973" = "#4575b4", "2018" = "#d73027")) +
+  scale_linetype_manual(values = c("1973" = "dashed", "2018" = "solid")) +
+  labs(
+    title    = "Kernel Univariado: Tasa de Alfabetismo Relativa",
+    subtitle = "Colombia 1973 vs. 2018 (log, relativo a la media nacional)",
+    x = "Log(Tasa relativa a la media nacional)",
+    y = "Densidad estimada",
+    color = "Año", linetype = "Año"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+
+print(p_univ)
+
+```
+Esta comparación permite constatar qué tanto se ha concentrado o dispersado la distribución. Para el registro de 1973 (línea discontinua azul) se aprecia que es amplia, aplanada y presenta asimetría hacia la izquierda: existe un número considerable de departamentos con tasas significativamente por debajo de la media nacional, particularmente la "cola izquierda" larga que corresponde a departamentos como Chocó, Sucre, Córdoba y Bolívar. En cambio, para 2018 (línea roja), la distribución se concentra marcadamente alrededor de la media nacional, es decir, la densidad es mucho más alta y estrecha, y las colas se han contraído de forma sustancial.
+
+### Kernel Bivariado
+
+```{r}
+bw_biv  <- c(bw.SJ(rel73), bw.SJ(rel18))
+est_biv <- bkde2D(cbind(rel73, rel18),
+                  bandwidth = bw_biv, gridsize = c(100, 100))
+
+# Convertir a data.frame para ggplot
+expand_grid_biv <- expand.grid(x = est_biv$x1, y = est_biv$x2)
+expand_grid_biv$z <- as.vector(est_biv$fhat)
+
+diag_line <- data.frame(x = seq(-0.30, 0.22, length.out = 100))
+diag_line$y <- diag_line$x
+
+df_pts <- data.frame(x = rel73, y = rel18, dept = data$dept)
+
+ggplot(expand_grid_biv, aes(x = x, y = y)) +
+  geom_contour_filled(aes(z = z), alpha = 0.85) +
+  geom_contour(aes(z = z), color = "black", alpha = 0.3, linewidth = 0.4) +
+  geom_line(data = diag_line, aes(x = x, y = y), color = "red",
+            linewidth = 1.5, linetype = "solid") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "blue", alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "darkgreen", alpha = 0.5) +
+  geom_point(data = df_pts, aes(x = x, y = y), color = "black", size = 2, alpha = 0.8) +
+  geom_text_repel(
+  data          = df_pts %>% filter(dept %in% c("Chocó","La Guajira","Bogotá","Sucre","Córdoba","Boyacá", "Quindío", "Atlántico")),
+  aes(label = dept),
+  size          = 3.5,
+  fontface      = "bold",
+  color         = "white",
+  bg.color      = "#222222",
+  bg.r          = 0.15,
+  box.padding   = 0.5,
+  point.padding = 0.3,
+  segment.color = "white",
+  segment.size  = 0.5,
+  max.overlaps  = Inf
+) +
+  scale_fill_viridis_d(option = "viridis", direction = -1) +
+  labs(
+    title    = "Kernel Bivariado",
+    subtitle = "Tasa de Alfabetismo Relativa: 1973 vs. 2018",
+    x = "Log(Tasa relativa) en 1973",
+    y = "Log(Tasa relativa) en 2018",
+    fill = "Densidad"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+
+```
+
+Al graficar el Kernel bivariado se observa inmediatamente un patrón de movilidad interdepartamental. La masa de densidad más alta se ubica levemente por encima y a la izquierda de la diagonal de persistencia (línea roja), lo que indica que los departamentos que en 1973 se encontraban por debajo de la media nacional mejoraron su posición relativa en 2018 sin alcanzar necesariamente la media, mientras que los que estaban por encima la redujeron. En términos generales, hay movilidad convergente. Chocó y Sucre, ubicados en la esquina inferior izquierda, se desplazan hacia valores de 2018 menos negativos de lo que la diagonal de persistencia predeciría, confirmando un avance relativo. En contraste, La Guajira representa la principal atipicidad del gráfico: su coordenada en 1973 es moderada (cercana a −0.05), pero en 2018 cae a −0.13, situándose notoriamente por debajo de la diagonal, es decir, es un territorio que en lugar de acercarse a la media nacional se aleja acentuadamente. Bogotá y Atlántico, en el cuadrante superior derecho, se desplazan hacia el centro horizontal pero se mantienen sobre la diagonal, lo que es esperable para quienes ocupan las primeras posiciones: una convergencia a menor ritmo.
+
+
+### Kernel Trivariado
+
+```{r, message=FALSE, warning=FALSE}
+library(plot3D)
+library(plotly)
+
+# Línea diagonal (persistencia)
+diag_x <- seq(min(est_biv$x1), max(est_biv$x1), length.out = 50)
+
+plot_ly() %>%
+  add_surface(
+    x = est_biv$x1,
+    y = est_biv$x2,
+    z = t(est_biv$fhat),
+    colorscale = list(
+      c(0,   "rgb(253,231,37)"),
+      c(0.25,"rgb(94,201,98)"),
+      c(0.5, "rgb(33,145,140)"),
+      c(0.75,"rgb(59,82,139)"),
+      c(1,   "rgb(68,1,84)")
+    ),
+    opacity = 0.9,
+    showscale = TRUE,
+    colorbar = list(title = "Densidad")
+  ) %>%
+  add_lines(
+    x = diag_x,
+    y = diag_x,
+    z = rep(0, 50),
+    line = list(color = "red", width = 5),
+    name = "Diagonal (persistencia)"
+  ) %>%
+  layout(
+    title = "Kernel Estocástico 3D: Tasa de Alfabetismo\nColombia 1973 vs. 2018",
+    scene = list(
+      xaxis = list(title = "Log relativo 1973"),
+      yaxis = list(title = "Log relativo 2018"),
+      zaxis = list(title = "Densidad"),
+      camera = list(eye = list(x = -1.5, y = -1.5, z = 1.2))
+    )
+  )
+```
+Con esta tercera visualización se puede apreciar, al tiempo, la distribución marginal en cada período y la distribución conjunta. Esta última presenta un pico único y pronunciado, ubicado cercano al origen del plano base, lo que indica que la mayor parte de los departamentos se sitúan próximos a la media nacional en ambos períodos. Mientras que la ausencia de una segunda moda en la distribución permite descartar la existencia de clubs de convergencia. El pico está desplazado ligeramente desde la diagonal, confirmando así la convergencia. Como se había expuesto anteriormente, la distribución en 2018 es más estrecha que en 1973 y está más centrada.
+
+## Conclusión
+
+Este análisis documenta un proceso robusto de convergencia interregional en la tasa de alfabetismo en Colombia durante el período 1973–2018, utilizando tres enfoques metodológicos propuestos en la literatura: $\sigma$-convergencia, $\beta$-convergencia y kernels estocásticos.
+
+La evidencia de $\sigma$-convergencia es inequívoca: el coeficiente de variación de la tasa de alfabetismo departamental se reduce desde 10.81% en 1973 hasta 3.81% en 2018, una caída del 65%; con un único quiebre en el período 1993–2005. La $\beta$-convergencia absoluta para el período completo es altamente significativa ($b = −0.0168$, $p < 0.001$), con una velocidad implícita de $\beta = 1.25\%$ anual y una vida media de 55.3 años. Estos dos primeros hallazgos consolidan los resultados de Royuela y García (2015), quienes para el período 1973–2005 ya documentaban convergencia en la tasa de alfabetismo pero con una señal algo más débil.
+
+
+El enfoque de Quah mediante kernels estocásticos termina por reforzar esta evidencia. El kernel univariado muestra una compresión sustancial de la distribución entre 1973 y 2018: la desviación estándar en escala logarítmica se reduce un 65% y la distribución de 2018 se concentra en torno a la media nacional. El kernel bivariado revela que la masa de densidad se concentra por encima de la diagonal de persistencia, confirmando que los departamentos rezagados han mejorado su posición relativa mientras los más avanzados han visto reducir su ventaja comparativa. Y el kernel tridimensional ofrece la misma interpretación.
+
+A diferencia de lo encontrado para el PIB per cápita, donde la evidencia de convergencia en Colombia es débil según Royuela y García (2015), la tasa de alfabetismo exhibe un proceso convergente claro y sostenido. Esto último encaja perfectamente con el argumento de que los indicadores de calidad de vida pueden converger incluso en ausencia de convergencia en el ingreso, especialmente cuando existen bienes públicos que tienden a difundirse de manera menos centralizada, como es el caso de la educación básica; cuyo impacto se puede medir a tráves de la tasa de alfabetismo.
